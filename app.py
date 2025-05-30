@@ -6,6 +6,30 @@ import time
 import numpy as np
 
 from scipy.spatial import distance
+
+class HandLandmark(): # enums for indexing the list
+    WRIST = 0
+    THUMB_CMC = 1
+    THUMB_MCP = 2
+    THUMB_IP = 3
+    THUMB_TIP = 4
+    INDEX_FINGER_MCP = 5
+    INDEX_FINGER_PIP = 6
+    INDEX_FINGER_DIP = 7
+    INDEX_FINGER_TIP = 8
+    MIDDLE_FINGER_MCP = 9
+    MIDDLE_FINGER_PIP = 10
+    MIDDLE_FINGER_DIP = 11
+    MIDDLE_FINGER_TIP = 12
+    RING_FINGER_MCP = 13
+    RING_FINGER_PIP = 14
+    RING_FINGER_DIP = 15
+    RING_FINGER_TIP = 16
+    PINKY_MCP = 17
+    PINKY_PIP = 18
+    PINKY_DIP = 19
+    PINKY_TIP = 20
+
 cap = cv2.VideoCapture(0)
 
 mp_drawing = mp.solutions.drawing_utils
@@ -15,11 +39,31 @@ hands = mp_hands.Hands()
 mpDraw = mp.solutions.drawing_utils
 
 
-dot_pos_x = np.empty(20)
-dot_pos_y = np.empty(20)
-dot_pos_z = np.empty(20)
+dot_pos_x = np.empty(21)
+dot_pos_y = np.empty(21)
+dot_pos_z = np.empty(21)
 
-dot_pos_array = np.empty((20,3))
+dot_pos_array = np.empty((21,3))
+dot_pos_array_scaled = np.empty((21,3))
+#pos_x_range[:,:] = 100.0
+dist_max = np.zeros((21,21))
+
+#gesture_1 = 'array_21x21.npy'
+gesture_1 = 'okay.npy'
+gesture_2 = 'peace.npy'
+
+gesture_saved_1 = np.load(gesture_1)
+print("Array loaded from file:")
+#print(loaded_array)
+
+gesture_saved_2 = np.load(gesture_2)
+print("Array loaded from file:")
+
+
+def cosine_similarity(matrix1, matrix2):
+    v1 = matrix1.flatten()
+    v2 = matrix2.flatten()
+    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
 with mp_hands.Hands(
     model_complexity=0,
@@ -34,7 +78,7 @@ with mp_hands.Hands(
 
     # To improve performance, optionally mark the image as not writeable to
     # pass by reference.
-    image.flags.writeable = False
+    #image.flags.writeable = False
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     results = hands.process(image)
 
@@ -45,16 +89,28 @@ with mp_hands.Hands(
       for hand_landmarks in results.multi_hand_landmarks: # hand landmarks
 
         for id, lm in enumerate(hand_landmarks.landmark): # individual finger id (integer) & x,y,z coords?
-            dot_pos_x[id - 1] = lm.x #updates numpy positional array, I need to make sure this is the right way to do this and that it scales properly.
-            dot_pos_y[id - 1] = lm.y # the -1 is for offsetting the index as id starts at 1 and arrays index from 0.
-            dot_pos_z[id - 1] = lm.z
+            h, w, c = image.shape
+            cx, cy, cz = int(lm.x * w), int(lm.y * h), int(lm.z * w)
+            dot_pos_x[id] = cx #updates numpy positional array, I need to make sure this is the right way to do this and that it scales properly.
+            dot_pos_y[id] = cy # the -1 is for offsetting the index as id starts at 1 and arrays index from 0.
+            dot_pos_z[id] = cz
+            #print(dot_pos_z[id - 1])
+            dot_pos_array[id,0] = cx #updates numpy positional array, I need to make sure this is the right way to do this and that it scales properly.
+            dot_pos_array[id,1] = cy # the -1 is for offsetting the index as id starts at 1 and arrays index from 0.
+            dot_pos_array[id,2] = cz
 
-            dot_pos_array[id - 1,0] = lm.x #updates numpy positional array, I need to make sure this is the right way to do this and that it scales properly.
-            dot_pos_array[id - 1,1] = lm.y # the -1 is for offsetting the index as id starts at 1 and arrays index from 0.
-            dot_pos_array[id - 1,2] = lm.z
+    
 
+           # pos_range_min[dot_pos_array] 
+
+        cv2.circle(image, (int(dot_pos_x[20]), int(dot_pos_y[20])), 10, (255, 0, 0), cv2.FILLED)
         dist = distance.cdist(dot_pos_array,dot_pos_array,'euclidean') # adjacency matrix
-        # print(np.shape(dist))
+        dist_max[dist > dist_max] = dist[dist > dist_max]
+        dist_scaled = (dist) / (dist_max) # normalise
+        dist_scaled = dist_scaled[~np.isnan(dist_scaled)] # replaces nan values with 1
+
+        print("okay" if cosine_similarity(dist_scaled, gesture_saved_1) > cosine_similarity(dist_scaled, gesture_saved_2) else "peace") # uses cosine similarity between vectors to decide between gesture
+        #print()
         mp_drawing.draw_landmarks(
             image,
             hand_landmarks,
@@ -65,7 +121,12 @@ with mp_hands.Hands(
     cv2.imshow('MediaPipe Hands', cv2.flip(image, 1))
     
     if cv2.waitKey(5) & 0xFF == 27:
+      
+      np.save(gesture_2, dist_scaled)
+      print(f"Array saved to '{gesture_2}'")
+      # Save the array to a .npy file
       break
+
 cap.release()
             
 
