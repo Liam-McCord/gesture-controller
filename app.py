@@ -4,9 +4,9 @@ import cv2
 import mediapipe as mp
 import time
 import numpy as np
-
+import os
 from scipy.spatial import distance
-
+from pathlib import Path
 class HandLandmark(): # enums for indexing the list
     WRIST = 0
     THUMB_CMC = 1
@@ -38,26 +38,25 @@ mp_hands = mp.solutions.hands
 hands = mp_hands.Hands()
 mpDraw = mp.solutions.drawing_utils
 
-
 dot_pos_x = np.empty(21)
 dot_pos_y = np.empty(21)
 dot_pos_z = np.empty(21)
 
-dot_pos_array = np.empty((21,3))
-dot_pos_array_scaled = np.empty((21,3))
-#pos_x_range[:,:] = 100.0
+dot_pos_array = np.empty((21,3)) # position of points on the hand
+dot_pos_array_scaled = np.empty((21,3)) # position of points on the hand scaled by the maximum value
+
 dist_max = np.zeros((21,21))
+current_gesture = "N/A"
+loaded_gestures = []
+gesture_names = []
+folder = Path("saved_gestures") # folder storing gesture files
 
-#gesture_1 = 'array_21x21.npy'
-gesture_1 = 'okay.npy'
-gesture_2 = 'peace.npy'
+for file in folder.glob("*.npy"):
+    gesture_names.append(file.name)
+    loaded_gestures.append(np.load(file))
 
-gesture_saved_1 = np.load(gesture_1)
-print("Array loaded from file:")
-#print(loaded_array)
 
-gesture_saved_2 = np.load(gesture_2)
-print("Array loaded from file:")
+gesture_cosine_offset = np.zeros(len(gesture_names))
 
 
 def cosine_similarity(matrix1, matrix2):
@@ -88,45 +87,55 @@ with mp_hands.Hands(
     if results.multi_hand_landmarks:
       for hand_landmarks in results.multi_hand_landmarks: # hand landmarks
 
-        for id, lm in enumerate(hand_landmarks.landmark): # individual finger id (integer) & x,y,z coords?
+        for id, lm in enumerate(hand_landmarks.landmark): 
             h, w, c = image.shape
-            cx, cy, cz = int(lm.x * w), int(lm.y * h), int(lm.z * w)
-            dot_pos_x[id] = cx #updates numpy positional array, I need to make sure this is the right way to do this and that it scales properly.
-            dot_pos_y[id] = cy # the -1 is for offsetting the index as id starts at 1 and arrays index from 0.
+            cx, cy, cz = int(lm.x * w), int(lm.y * h), int(lm.z * w) # converts x,y,z to coordinates based on the display.
+            dot_pos_x[id] = cx # scaled x coordinate of an individual point
+            dot_pos_y[id] = cy 
             dot_pos_z[id] = cz
-            #print(dot_pos_z[id - 1])
-            dot_pos_array[id,0] = cx #updates numpy positional array, I need to make sure this is the right way to do this and that it scales properly.
-            dot_pos_array[id,1] = cy # the -1 is for offsetting the index as id starts at 1 and arrays index from 0.
+           
+            dot_pos_array[id,0] = cx # scaled x coordinate of an individual point, all data for all points is put into an array to be manipulated later.
+            dot_pos_array[id,1] = cy 
             dot_pos_array[id,2] = cz
 
-    
-
-           # pos_range_min[dot_pos_array] 
-
-        cv2.circle(image, (int(dot_pos_x[20]), int(dot_pos_y[20])), 10, (255, 0, 0), cv2.FILLED)
-        dist = distance.cdist(dot_pos_array,dot_pos_array,'euclidean') # adjacency matrix
-        dist_max[dist > dist_max] = dist[dist > dist_max]
-        dist_scaled = (dist) / (dist_max) # normalise
-        dist_scaled = dist_scaled[~np.isnan(dist_scaled)] # replaces nan values with 1
-
-        print("okay" if cosine_similarity(dist_scaled, gesture_saved_1) > cosine_similarity(dist_scaled, gesture_saved_2) else "peace") # uses cosine similarity between vectors to decide between gesture
-        #print()
-        mp_drawing.draw_landmarks(
+        mp_drawing.draw_landmarks( # draws the points on the screen
             image,
             hand_landmarks,
             mp_hands.HAND_CONNECTIONS,
             mp_drawing_styles.get_default_hand_landmarks_style(),
             mp_drawing_styles.get_default_hand_connections_style())
-    # Flip the image horizontally for a selfie-view display.
-    cv2.imshow('MediaPipe Hands', cv2.flip(image, 1))
-    
-    if cv2.waitKey(5) & 0xFF == 27:
-      
-      np.save(gesture_2, dist_scaled)
-      print(f"Array saved to '{gesture_2}'")
-      # Save the array to a .npy file
-      break
 
+
+      #cv2.circle(image, (int(dot_pos_x[20]), int(dot_pos_y[20])), 10, (255, 0, 0), cv2.FILLED) 
+
+      dist = distance.cdist(dot_pos_array,dot_pos_array,'euclidean') # adjacency matrix with distances of every point to every other point. In the future I may want to cut out the connections on the same finger that are not relevant.
+      dist_max[dist > dist_max] = dist[dist > dist_max]
+      dist_scaled = (dist) / (dist_max) # normalise the distance matrix with the maximum recorded distance (not perfect but should get within the ballpark of 0 to 1)
+      dist_scaled = dist_scaled[~np.isnan(dist_scaled)] # replaces nan values with 1 for diagonal of adj matrix
+      gesture_similarity = [cosine_similarity(dist_scaled, gesture) for gesture in loaded_gestures] # generally does cosine difference between current hand position and gestures
+      current_gesture = gesture_names[gesture_similarity.index(max(gesture_similarity))] # print closest gesture similarity
+    flipped = cv2.flip(image, 1)  # Flip the image horizontally as we want it to look like a mirror
+
+    cv2.putText(flipped, f"Current Gesture: {current_gesture}", (10, 450), 
+            cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 255), 3) # display most likely gesture
+
+    cv2.imshow('MediaPipe Hands', flipped)
+
+    if cv2.waitKey(5) & 0xFF == ord('~'): # saves a new gesture to a .npy file when ~ is pressed
+      gesture_name = input("New Gesture Name: ") 
+      np.save(f"saved_gestures/gesture_{gesture_name}", dist_scaled)
+
+      # load gestures with the new gesture
+      loaded_gestures = []
+      gesture_names = []
+      for file in folder.glob("*.npy"):
+        gesture_names.append(file.name)
+        loaded_gestures.append(np.load(file))
+
+      #np.save(f"saved_gestures/gesture_{len(gesture_names)}", dist_scaled)
+
+    if cv2.waitKey(5) & 0xFF == 27: #quit when esc is pressed
+      break
 cap.release()
             
 
