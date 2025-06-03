@@ -1,3 +1,5 @@
+# basic mediapipe functionality from https://mediapipe.readthedocs.io/en/latest/solutions/hands.html#mediapipe-hands
+
 import cv2
 import mediapipe as mp
 import time
@@ -6,129 +8,239 @@ import pydirectinput
 import os
 from scipy.spatial import distance
 from pathlib import Path
-from threading import Thread, Lock
-from queue import Queue
+import threading
 
-class HandLandmark():
-    WRIST, THUMB_CMC, THUMB_MCP, THUMB_IP, THUMB_TIP, \
-    INDEX_FINGER_MCP, INDEX_FINGER_PIP, INDEX_FINGER_DIP, INDEX_FINGER_TIP, \
-    MIDDLE_FINGER_MCP, MIDDLE_FINGER_PIP, MIDDLE_FINGER_DIP, MIDDLE_FINGER_TIP, \
-    RING_FINGER_MCP, RING_FINGER_PIP, RING_FINGER_DIP, RING_FINGER_TIP, \
-    PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP = range(21)
+from collections import deque
+
+global current_gesture_output # temporary solution for communcation between threads
+gesture_lock = threading.Lock()
+current_gesture = "N/A"
+previous_gesture = "N/A"
+
+class HandLandmark(): # enums for indexing the list
+    WRIST = 0
+    THUMB_CMC = 1
+    THUMB_MCP = 2
+    THUMB_IP = 3
+    THUMB_TIP = 4
+    INDEX_FINGER_MCP = 5
+    INDEX_FINGER_PIP = 6
+    INDEX_FINGER_DIP = 7
+    INDEX_FINGER_TIP = 8
+    MIDDLE_FINGER_MCP = 9
+    MIDDLE_FINGER_PIP = 10
+    MIDDLE_FINGER_DIP = 11
+    MIDDLE_FINGER_TIP = 12
+    RING_FINGER_MCP = 13
+    RING_FINGER_PIP = 14
+    RING_FINGER_DIP = 15
+    RING_FINGER_TIP = 16
+    PINKY_MCP = 17
+    PINKY_PIP = 18
+    PINKY_DIP = 19
+    PINKY_TIP = 20
+
+
 
 class PointCoordinates():
-    def __init__(self, x, y, z):
-        self.x = x
-        self.y = y
-        self.z = z
-    def set_coords(self, x, y, z):
-        self.x, self.y, self.z = x, y, z
-    def return_diff(self, x, y, z):
-        return self.x - x, self.y - y, self.z - z
+  def __init__(self, x,y,z):
+    self.x = x,
+    self.y = y,
+    self.z = z
+  def set_coords(self, x,y,z):
+     self.x = x
+     self.y = y
+     self.z = z
+  def return_diff(self, x, y, z):
+     dx = self.x - x
+     dy = self.y - y
+     dz = self.z - z
+     return dx,dy,dz
+  def move_direction(self, x, y, z, outputs, key_states):
+    dx, dy, dz = self.return_diff(x, y, z)
+    desired_keys = set()
 
-# Threaded key control handler
-def key_controller(key_queue, lock):
-    while True:
-        action, keys = key_queue.get()
-        if action == "quit":
-            break
-        with lock:
-            for key in keys:
-                if action == "keydown":
-                    pydirectinput.keyDown(key)
-                elif action == "keyup":
-                    pydirectinput.keyUp(key)
-        key_queue.task_done()
+    desired_keys.add(outputs[0] if dx > 0 else outputs[1])
+    desired_keys.add(outputs[2] if dy > 0 else outputs[3])
 
-# Initialize threading
-key_queue = Queue()
-key_lock = Lock()
-thread = Thread(target=key_controller, args=(key_queue, key_lock))
-thread.start()
+    for key in outputs:
+        if key in desired_keys and not key_states[key]:
+            pydirectinput.keyDown(key)
+            key_states[key] = True
+        elif key not in desired_keys and key_states[key]:
+            pydirectinput.keyUp(key)
+            key_states[key] = False
 
-# Main OpenCV + MediaPipe setup
+
+interpolation_factor = 0.5
+prev_x = 0
+prev_y = 0
+
+def lerp(a, b, t):
+    return a + (b - a) * t # linear interpolation
+
+def update_mouse(dot_pos_x, dot_pos_y, HandLandmark):
+    global prev_x, prev_y # previous states
+
+    wrist_x = dot_pos_x[HandLandmark.WRIST]
+    wrist_y = dot_pos_y[HandLandmark.WRIST]
+
+    # Scale coordinates (kind of arbitrary depending on screen)
+    x_offset = 1200
+    target_x = x_offset - int(wrist_x * 4)
+    target_y = int(wrist_y * 4) - 1000
+
+    #target_x = 2000 - int(wrist_x * 4)
+    #target_y = int(wrist_y * 4) - 500
+
+    # Add to buffer
+    x_buffer.append(target_x)
+    y_buffer.append(target_y)
+
+    # Average from buffer
+    avg_x = sum(x_buffer) / len(x_buffer)
+    avg_y = sum(y_buffer) / len(y_buffer)
+
+    # Interpolate between previous position and the smoothed average
+    smoothed_x = lerp(prev_x, avg_x, interpolation_factor)
+    smoothed_y = lerp(prev_y, avg_y, interpolation_factor)
+
+    # Move the mouse
+    pydirectinput.moveTo(int(smoothed_x), int(smoothed_y))  # Faster updates
+
+    # Update previous positions
+    prev_x = smoothed_x
+    prev_y = smoothed_y
+
+def cosine_similarity(matrix1, matrix2):
+    v1 = matrix1.flatten()
+    v2 = matrix2.flatten()
+    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+
 cap = cv2.VideoCapture(0)
+
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands()
-dot_pos_array = np.empty((21, 3))
-dist_max = np.zeros((21, 21))
-current_gesture = previous_gesture = "N/A"
-current_pos = PointCoordinates(0, 0, 0)
+mpDraw = mp.solutions.drawing_utils
+
+dot_pos_x = np.empty(21)
+dot_pos_y = np.empty(21)
+dot_pos_z = np.empty(21)
+
+# Initialize the buffer with size 5 (for smooth movement)
+buffer_size = 1
+x_buffer = deque(maxlen=buffer_size)
+y_buffer = deque(maxlen=buffer_size)
+
+
+dot_pos_array = np.empty((21,3)) # position of points on the hand
+dot_pos_array_scaled = np.empty((21,3)) # position of points on the hand scaled by the maximum value
+
+dist_max = np.zeros((21,21))
+
+current_gesture = "N/A"
+previous_gesture = "N/A"
+current_pos = PointCoordinates(0,0,0)
+
 
 loaded_gestures = []
 gesture_names = []
-folder = Path("saved_gestures")
+folder = Path("saved_gestures") # folder storing gesture files
+
 for file in folder.glob("*.npy"):
     gesture_names.append(file.name)
     loaded_gestures.append(np.load(file))
 
-with mp_hands.Hands(
-    model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
-    while cap.isOpened():
-        success, image = cap.read()
-        if not success:
-            continue
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = hands.process(image_rgb)
-        image = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
 
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                for id, lm in enumerate(hand_landmarks.landmark):
-                    h, w, _ = image.shape
-                    cx, cy, cz = int(lm.x * w), int(lm.y * h), int(lm.z * w)
-                    dot_pos_array[id] = [cx, cy, cz]
+gesture_cosine_offset = np.zeros(len(gesture_names))
 
-                mp.solutions.drawing_utils.draw_landmarks(
-                    image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+def hand_recog_func():
+    global current_gesture
+    with mp_hands.Hands(
+        model_complexity=0,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5) as hands:
+        while cap.isOpened():
+            success, image = cap.read()
+            if not success:
+                continue
 
-            dist = distance.cdist(dot_pos_array, dot_pos_array, 'euclidean')
-            dist_max[dist > dist_max] = dist[dist > dist_max]
-            dist_scaled = dist / dist_max
-            dist_scaled = dist_scaled[~np.isnan(dist_scaled)]
-            gesture_similarity = [np.dot(dist_scaled.flatten(), gesture.flatten()) /
-                                  (np.linalg.norm(dist_scaled.flatten()) * np.linalg.norm(gesture.flatten()))
-                                  for gesture in loaded_gestures]
-            current_gesture = gesture_names[np.argmax(gesture_similarity)]
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            results = hands.process(image)
+            image.flags.writeable = True
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-            trigger_gesture = "gesture_pinch.npy"
-            outputs = ['right', 'left', 'up', 'down']
-            if current_gesture == trigger_gesture and previous_gesture != trigger_gesture:
-                current_pos.set_coords(*dot_pos_array[HandLandmark.INDEX_FINGER_TIP])
-            elif current_gesture == trigger_gesture:
-                dx, dy, dz = current_pos.return_diff(*dot_pos_array[HandLandmark.INDEX_FINGER_TIP])
-                # Release all keys first
-                key_queue.put(("keyup", outputs))
-                # Press relevant keys
-                if dx > 0:
-                    key_queue.put(("keydown", [outputs[0]]))
-                else:
-                    key_queue.put(("keydown", [outputs[1]]))
-                if dy > 0:
-                    key_queue.put(("keydown", [outputs[2]]))
-                else:
-                    key_queue.put(("keydown", [outputs[3]]))
-            elif current_gesture != trigger_gesture and previous_gesture == trigger_gesture:
-                key_queue.put(("keyup", outputs))
-            previous_gesture = current_gesture
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    for id, lm in enumerate(hand_landmarks.landmark):
+                        h, w, c = image.shape
+                        cx, cy, cz = int(lm.x * w), int(lm.y * h), int(lm.z * w)
+                        dot_pos_x[id] = cx
+                        dot_pos_y[id] = cy
+                        dot_pos_z[id] = cz
+                        dot_pos_array[id] = [cx, cy, cz]
 
-        flipped = cv2.flip(image, 1)
-        cv2.putText(flipped, f"Gesture: {current_gesture}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
-        cv2.imshow('Hand Tracker', flipped)
+                    mp_drawing.draw_landmarks(
+                        image, hand_landmarks, mp_hands.HAND_CONNECTIONS,
+                        mp_drawing_styles.get_default_hand_landmarks_style(),
+                        mp_drawing_styles.get_default_hand_connections_style())
 
-        if cv2.waitKey(5) & 0xFF == ord('~'):
-            gesture_name = input("New Gesture Name: ")
-            np.save(f"saved_gestures/gesture_{gesture_name}", dist_scaled)
-            # Reload gestures
-            loaded_gestures.clear()
-            gesture_names.clear()
-            for file in folder.glob("*.npy"):
-                gesture_names.append(file.name)
-                loaded_gestures.append(np.load(file))
-        if cv2.waitKey(5) & 0xFF == 27:
-            break
+                dist = distance.cdist(dot_pos_array, dot_pos_array, 'euclidean')
+                dist_max[dist > dist_max] = dist[dist > dist_max]
+                dist_scaled = dist / dist_max
+                dist_scaled = dist_scaled[~np.isnan(dist_scaled)]
 
-cap.release()
-cv2.destroyAllWindows()
-key_queue.put(("quit", []))
-thread.join()
+                gesture_similarity = [cosine_similarity(dist_scaled, gesture) for gesture in loaded_gestures]
+                recognized = gesture_names[gesture_similarity.index(max(gesture_similarity))]
+
+                with gesture_lock:
+                    current_gesture = recognized
+
+            flipped = cv2.flip(image, 1)
+            cv2.imshow('MediaPipe Hands', flipped)
+
+            key = cv2.waitKey(5) & 0xFF
+            if key == ord('='):
+                gesture_name = input("New Gesture Name: ")
+                np.save(f"saved_gestures/gesture_{gesture_name}", dist_scaled)
+                gesture_names.clear()
+                loaded_gestures.clear()
+                for file in folder.glob("*.npy"):
+                    gesture_names.append(file.name)
+                    loaded_gestures.append(np.load(file))
+            elif key == 27:
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+
+def mouse_movement_func():
+    global previous_gesture
+    while True:
+        with gesture_lock:
+            gesture = current_gesture
+
+        update_mouse(dot_pos_x, dot_pos_y, HandLandmark)
+
+        if gesture == "gesture_rightclick.npy" and previous_gesture != "gesture_rightclick.npy":
+            pydirectinput.click()
+
+        if gesture == "gesture_click.npy" and previous_gesture != "gesture_click.npy":
+            pydirectinput.rightClick()
+
+        if gesture == "gesture_fist.npy" and previous_gesture != "gesture_fist.npy":
+            pydirectinput.scroll(1)
+
+        previous_gesture = gesture
+        time.sleep(0.02)  # prevent CPU overuse
+
+# Start threads
+gesture_thread = threading.Thread(target=hand_recog_func, daemon=True)
+mouse_thread = threading.Thread(target=mouse_movement_func, daemon=True)
+
+gesture_thread.start()
+mouse_thread.start()
+
+gesture_thread.join()  # keeps the main program alive

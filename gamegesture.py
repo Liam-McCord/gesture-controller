@@ -8,8 +8,12 @@ import pydirectinput
 import os
 from scipy.spatial import distance
 from pathlib import Path
+import threading
 
 from collections import deque
+
+global current_gesture_output # temporary solution for communcation between threads
+
 
 class HandLandmark(): # enums for indexing the list
     WRIST = 0
@@ -66,7 +70,7 @@ class PointCoordinates():
             key_states[key] = False
 
 
-interpolation_factor = 0.8
+interpolation_factor = 1
 prev_x = 0
 prev_y = 0
 
@@ -120,7 +124,7 @@ dot_pos_y = np.empty(21)
 dot_pos_z = np.empty(21)
 
 # Initialize the buffer with size 5 (for smooth movement)
-buffer_size = 5
+buffer_size = 1
 x_buffer = deque(maxlen=buffer_size)
 y_buffer = deque(maxlen=buffer_size)
 
@@ -145,110 +149,145 @@ for file in folder.glob("*.npy"):
 
 
 gesture_cosine_offset = np.zeros(len(gesture_names))
+def hand_recog_func():
+  with mp_hands.Hands(
+      model_complexity=0,
+      min_detection_confidence=0.5,
+      min_tracking_confidence=0.5) as hands:
+    while cap.isOpened():
+      success, image = cap.read()
+      if not success:
+        print("Ignoring empty camera frame.")
+        # If loading a video, use 'break' instead of 'continue'.
+        continue
 
-with mp_hands.Hands(
-    model_complexity=0,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5) as hands:
-  while cap.isOpened():
-    success, image = cap.read()
-    if not success:
-      print("Ignoring empty camera frame.")
-      # If loading a video, use 'break' instead of 'continue'.
-      continue
+      # To improve performance, optionally mark the image as not writeable to
+      # pass by reference.
+      #image.flags.writeable = False
+      image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+      results = hands.process(image)
 
-    # To improve performance, optionally mark the image as not writeable to
-    # pass by reference.
-    #image.flags.writeable = False
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = hands.process(image)
+      # Draw the hand annotations on the image.
+      image.flags.writeable = True
+      image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+      if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks: # hand landmarks
 
-    # Draw the hand annotations on the image.
-    image.flags.writeable = True
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    if results.multi_hand_landmarks:
-      for hand_landmarks in results.multi_hand_landmarks: # hand landmarks
+          for id, lm in enumerate(hand_landmarks.landmark): 
+              h, w, c = image.shape
+              cx, cy, cz = int(lm.x * w), int(lm.y * h), int(lm.z * w) # converts x,y,z to coordinates based on the display.
+              dot_pos_x[id] = cx # scaled x coordinate of an individual point
+              dot_pos_y[id] = cy 
+              dot_pos_z[id] = cz
+            
+              dot_pos_array[id,0] = cx # scaled x coordinate of an individual point, all data for all points is put into an array to be manipulated later.
+              dot_pos_array[id,1] = cy 
+              dot_pos_array[id,2] = cz
 
-        for id, lm in enumerate(hand_landmarks.landmark): 
-            h, w, c = image.shape
-            cx, cy, cz = int(lm.x * w), int(lm.y * h), int(lm.z * w) # converts x,y,z to coordinates based on the display.
-            dot_pos_x[id] = cx # scaled x coordinate of an individual point
-            dot_pos_y[id] = cy 
-            dot_pos_z[id] = cz
-           
-            dot_pos_array[id,0] = cx # scaled x coordinate of an individual point, all data for all points is put into an array to be manipulated later.
-            dot_pos_array[id,1] = cy 
-            dot_pos_array[id,2] = cz
-
-        mp_drawing.draw_landmarks( # draws the points on the screen
-            image,
-            hand_landmarks,
-            mp_hands.HAND_CONNECTIONS,
-            mp_drawing_styles.get_default_hand_landmarks_style(),
-            mp_drawing_styles.get_default_hand_connections_style())
-
-
-      #cv2.circle(image, (int(dot_pos_x[20]), int(dot_pos_y[20])), 10, (255, 0, 0), cv2.FILLED) 
-
-      dist = distance.cdist(dot_pos_array,dot_pos_array,'euclidean') # adjacency matrix with distances of every point to every other point. In the future I may want to cut out the connections on the same finger that are not relevant.
-      dist_max[dist > dist_max] = dist[dist > dist_max]
-      dist_scaled = (dist) / (dist_max) # normalise the distance matrix with the maximum recorded distance (not perfect but should get within the ballpark of 0 to 1)
-      dist_scaled = dist_scaled[~np.isnan(dist_scaled)] # replaces nan values with 1 for diagonal of adj matrix
-      gesture_similarity = [cosine_similarity(dist_scaled, gesture) for gesture in loaded_gestures] # generally does cosine difference between current hand position and gestures
-      current_gesture = gesture_names[gesture_similarity.index(max(gesture_similarity))] # print closest gesture similarity
+          mp_drawing.draw_landmarks( # draws the points on the screen
+              image,
+              hand_landmarks,
+              mp_hands.HAND_CONNECTIONS,
+              mp_drawing_styles.get_default_hand_landmarks_style(),
+              mp_drawing_styles.get_default_hand_connections_style())
 
 
-      trigger_gesture = "gesture_rightclick.npy"
-      trigger_gesture_2 = "gesture_click.npy"
-      trigger_gesture_3 = "gesture_fist.npy"
-      outputs = ['right', 'left', 'up', 'down']
-      update_mouse(dot_pos_x, dot_pos_y, HandLandmark)
+        #cv2.circle(image, (int(dot_pos_x[20]), int(dot_pos_y[20])), 10, (255, 0, 0), cv2.FILLED) 
 
-      if current_gesture == trigger_gesture and previous_gesture != trigger_gesture:
-        pydirectinput.click()
+        dist = distance.cdist(dot_pos_array,dot_pos_array,'euclidean') # adjacency matrix with distances of every point to every other point. In the future I may want to cut out the connections on the same finger that are not relevant.
+        dist_max[dist > dist_max] = dist[dist > dist_max]
+        dist_scaled = (dist) / (dist_max) # normalise the distance matrix with the maximum recorded distance (not perfect but should get within the ballpark of 0 to 1)
+        dist_scaled = dist_scaled[~np.isnan(dist_scaled)] # replaces nan values with 1 for diagonal of adj matrix
+        gesture_similarity = [cosine_similarity(dist_scaled, gesture) for gesture in loaded_gestures] # generally does cosine difference between current hand position and gestures
+        current_gesture = gesture_names[gesture_similarity.index(max(gesture_similarity))] # print closest gesture similarity
+
+
+        trigger_gesture = "gesture_rightclick.npy"
+        trigger_gesture_2 = "gesture_click.npy"
+        trigger_gesture_3 = "gesture_fist.npy"
+       
+        #update_mouse(dot_pos_x, dot_pos_y, HandLandmark)
+        current_gesture_output = current_gesture
+        #if current_gesture == trigger_gesture and previous_gesture != trigger_gesture:
+        #  pydirectinput.click()
+        
+        #game_controller = 0
+        #if game_controller == 1:
+        #  if current_gesture == trigger_gesture:
+        #    pydirectinput.keyDown("l")
+            #pydirectinput.mouseDown(_pause=False)
+        #  else:
+      #     pydirectinput.keyUp("l")
+
+      #   if current_gesture == trigger_gesture_2:
+        #    pydirectinput.keyDown("k")
+            #pydirectinput.mouseDown(_pause=False)
+        # else:
+        #    pydirectinput.keyUp("k")
+        #if current_gesture == trigger_gesture_2 and previous_gesture != trigger_gesture_2:
+        #  pydirectinput.rightClick()
+        #if current_gesture == trigger_gesture_3 and previous_gesture != trigger_gesture_3:
+        #  pydirectinput.scroll(1)
+        
+
+      flipped = cv2.flip(image, 1)  # Flip the image horizontally as we want it to look like a mirror
+
+      #cv2.putText(flipped, f"Current Gesture: {current_gesture_output}", (10, 450), 
+      #        cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 255), 3) # display most likely gesture
+
+      cv2.imshow('MediaPipe Hands', flipped)
+
+      if cv2.waitKey(5) & 0xFF == ord('='): # saves a new gesture to a .npy file when ~ is pressed
+        gesture_name = input("New Gesture Name: ") 
+        np.save(f"saved_gestures/gesture_{gesture_name}", dist_scaled)
+
+        # load gestures with the new gesture
+        loaded_gestures = []
+        gesture_names = []
+        for file in folder.glob("*.npy"):
+          gesture_names.append(file.name)
+          loaded_gestures.append(np.load(file))
+
+        #np.save(f"saved_gestures/gesture_{len(gesture_names)}", dist_scaled)
+
+      if cv2.waitKey(5) & 0xFF == 27: #quit when esc is pressed
+        break
       
-      game_controller = 1
-      if game_controller == 1:
-        if current_gesture == trigger_gesture:
-          pydirectinput.keyDown("l")
-          #pydirectinput.mouseDown(_pause=False)
-        else:
-          pydirectinput.keyUp("l")
+  cap.release()
 
-        if current_gesture == trigger_gesture_2:
-          pydirectinput.keyDown("k")
-          #pydirectinput.mouseDown(_pause=False)
-        else:
-          pydirectinput.keyUp("k")
-      if current_gesture == trigger_gesture_2 and previous_gesture != trigger_gesture_2:
-        pydirectinput.rightClick()
-      if current_gesture == trigger_gesture_3 and previous_gesture != trigger_gesture_3:
-        pydirectinput.scroll(1)
-      
 
-    flipped = cv2.flip(image, 1)  # Flip the image horizontally as we want it to look like a mirror
+def mouse_movement_func():
+  while True:
+    trigger_gesture = "gesture_rightclick.npy"
+    trigger_gesture_2 = "gesture_click.npy"
+    trigger_gesture_3 = "gesture_fist.npy"
+    
+    #update_mouse(dot_pos_x, dot_pos_y, HandLandmark)
+    current_gesture_output = current_gesture
+    update_mouse(dot_pos_x, dot_pos_y, HandLandmark)
+    game_controller = 0
+    if current_gesture_output == trigger_gesture and previous_gesture != trigger_gesture:
+      pydirectinput.click()
+    if game_controller == 1:
+      if current_gesture == trigger_gesture:
+        pydirectinput.keyDown("l")
+        #pydirectinput.mouseDown(_pause=False)
+      else:
+        pydirectinput.keyUp("l")
 
-    cv2.putText(flipped, f"Current Gesture: {current_gesture}", (10, 450), 
-            cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 255), 3) # display most likely gesture
-
-    cv2.imshow('MediaPipe Hands', flipped)
-
-    if cv2.waitKey(5) & 0xFF == ord('='): # saves a new gesture to a .npy file when ~ is pressed
-      gesture_name = input("New Gesture Name: ") 
-      np.save(f"saved_gestures/gesture_{gesture_name}", dist_scaled)
-
-      # load gestures with the new gesture
-      loaded_gestures = []
-      gesture_names = []
-      for file in folder.glob("*.npy"):
-        gesture_names.append(file.name)
-        loaded_gestures.append(np.load(file))
-
-      #np.save(f"saved_gestures/gesture_{len(gesture_names)}", dist_scaled)
-
-    if cv2.waitKey(5) & 0xFF == 27: #quit when esc is pressed
-      break
+      if current_gesture == trigger_gesture_2:
+        pydirectinput.keyDown("k")
+        #pydirectinput.mouseDown(_pause=False)
+      else:
+        pydirectinput.keyUp("k")
+    if current_gesture == trigger_gesture_2 and previous_gesture != trigger_gesture_2:
+      pydirectinput.rightClick()
+    if current_gesture == trigger_gesture_3 and previous_gesture != trigger_gesture_3:
+      pydirectinput.scroll(1)
     previous_gesture = current_gesture
-cap.release()
-          
-  
+
+hand_recog_func()
+#thread = threading.Thread(target=mouse_movement_func()) 
+#thread.start()
+#thread.join()
+
