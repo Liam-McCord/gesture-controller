@@ -72,26 +72,40 @@ class PointCoordinates():
             key_states[key] = False
 
 
-interpolation_factor = 0.5
-prev_x = 0
-prev_y = 0
 
 def lerp(a, b, t):
     return a + (b - a) * t # linear interpolation
 
-def update_mouse(dot_pos_x, dot_pos_y, HandLandmark):
+def update_mouse(dot_pos_x, dot_pos_y, HandLandmark, left_bound, right_bound, lower_bound, upper_bound):
     global prev_x, prev_y # previous states
 
     wrist_x = dot_pos_x[HandLandmark.WRIST]
     wrist_y = dot_pos_y[HandLandmark.WRIST]
 
     # Scale coordinates (kind of arbitrary depending on screen)
-    x_offset = 1200
-    target_x = x_offset - int(wrist_x * 4)
-    target_y = int(wrist_y * 4) - 1000
+    #x_offset = 1200
+    #target_x = x_offset - int(wrist_x * 4)
+    #target_y = int(wrist_y * 4) - 1000
 
-    #target_x = 2000 - int(wrist_x * 4)
-    #target_y = int(wrist_y * 4) - 500
+    # we have a maximum, minimum
+    x_min_monitor = 1
+    y_min_monitor = 1
+    x_max_monitor = pydirectinput.size()[0]
+    y_max_monitor = pydirectinput.size()[1]
+    
+    x_range = right_bound - left_bound
+    y_range = upper_bound - lower_bound
+
+    if x_range == 0 or y_range == 0:
+        raise ValueError("Bounds are invalid — division by zero risk.")
+
+    target_x = int((wrist_x - left_bound) / x_range * (x_max_monitor - x_min_monitor) + x_min_monitor)
+    target_y = int((upper_bound - wrist_y) / y_range * (y_max_monitor - y_min_monitor) + y_min_monitor)
+    #2000 - int(wrist_x * 4)
+
+
+    #target_x = 
+    #target_y = -int(wrist_y * 4) +1000 #- 500
 
     # Add to buffer
     x_buffer.append(target_x)
@@ -130,7 +144,11 @@ dot_pos_y = np.empty(21)
 dot_pos_z = np.empty(21)
 
 # Initialize the buffer with size 5 (for smooth movement)
-buffer_size = 1
+buffer_size = 10
+interpolation_factor = 0.7
+prev_x = 0
+prev_y = 0
+
 x_buffer = deque(maxlen=buffer_size)
 y_buffer = deque(maxlen=buffer_size)
 
@@ -158,6 +176,8 @@ gesture_cosine_offset = np.zeros(len(gesture_names))
 
 def hand_recog_func():
     global current_gesture
+    #current_display_text = "N/A"
+    #global current_display_text
     with mp_hands.Hands(
         model_complexity=0,
         min_detection_confidence=0.5,
@@ -199,6 +219,10 @@ def hand_recog_func():
                     current_gesture = recognized
 
             flipped = cv2.flip(image, 1)
+
+
+            cv2.putText(flipped, f"{current_display_text}", (10, 450), 
+              cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 255), 3) # display most likely gesture
             cv2.imshow('MediaPipe Hands', flipped)
 
             key = cv2.waitKey(5) & 0xFF
@@ -218,21 +242,72 @@ def hand_recog_func():
 
 def mouse_movement_func():
     global previous_gesture
+    global current_display_text
+    run_tracking = True
+    current_display_text = "N/A"
+    boundary_check = "left"
+   
+    left_bound = 1980
+    right_bound = 1980
+    lower_bound = 1980 
+    upper_bound = 1980
     while True:
+        #print("H")
         with gesture_lock:
             gesture = current_gesture
+        if boundary_check == "left":
+            current_display_text = "Move hand to left side of screen."
+            if gesture == "gesture_fist.npy" and previous_gesture != "gesture_fist.npy":  # rising edge
+                left_bound = dot_pos_x[HandLandmark.WRIST]  # could also be a landmark like hand_landmarks[0].x
+                boundary_check = "right"
+                time.sleep(1)
+                
 
-        update_mouse(dot_pos_x, dot_pos_y, HandLandmark)
+        elif boundary_check == "right":
+            current_display_text = "Move hand to right side of screen."
+            if gesture == "gesture_fist.npy" and previous_gesture != "gesture_fist.npy":
+                right_bound = dot_pos_x[HandLandmark.WRIST]
+                boundary_check = "up"
+                time.sleep(1)
 
-        if gesture == "gesture_rightclick.npy" and previous_gesture != "gesture_rightclick.npy":
-            pydirectinput.click()
+        elif boundary_check == "up":
+            current_display_text = "Move hand to top side of screen."
+            if gesture == "gesture_fist.npy" and previous_gesture != "gesture_fist.npy":
+                upper_bound = dot_pos_y[HandLandmark.WRIST]
+                boundary_check = "down"
+                time.sleep(1)
 
-        if gesture == "gesture_click.npy" and previous_gesture != "gesture_click.npy":
-            pydirectinput.rightClick()
+        elif boundary_check == "down":
+            current_display_text = "Move hand to bottom side of screen."
+            if gesture == "gesture_fist.npy" and previous_gesture != "gesture_fist.npy":
+                lower_bound = dot_pos_y[HandLandmark.WRIST]
+                boundary_check = "finished"  # or reset to "left" if looping
+                time.sleep(1)
+                
 
-        if gesture == "gesture_fist.npy" and previous_gesture != "gesture_fist.npy":
-            pydirectinput.scroll(1)
 
+        if boundary_check == "finished":
+            
+            if run_tracking == True:
+                current_display_text = f"Tracking online, Gesture = {gesture}"
+                update_mouse(dot_pos_x, dot_pos_y, HandLandmark, left_bound, right_bound, lower_bound, upper_bound)
+
+                if gesture == "gesture_rightclick.npy" and previous_gesture != "gesture_rightclick.npy":
+                    pydirectinput.click()
+
+                if gesture == "gesture_click.npy" and previous_gesture != "gesture_click.npy":
+                    pydirectinput.rightClick()
+
+                if gesture == "gesture_scroll.npy" and previous_gesture != "gesture_scroll.npy":
+                    pydirectinput.scroll(1)
+
+            if gesture == "gesture_toggle.npy" and previous_gesture != "gesture_toggle.npy":
+
+                current_display_text = f"Tracking offline."
+                run_tracking = not run_tracking
+                
+        #if boundary_check == "up":
+       # if boundary_check == "down":
         previous_gesture = gesture
         time.sleep(0.02)  # prevent CPU overuse
 
@@ -244,3 +319,13 @@ gesture_thread.start()
 mouse_thread.start()
 
 gesture_thread.join()  # keeps the main program alive
+
+
+def set_boundaries():
+    boundary_check = "left"
+    if boundary_check == "left":
+        # display "move to left" text
+        # if fist curled:
+        # set left coordinates
+        # switch current_boundary to 
+        pass
