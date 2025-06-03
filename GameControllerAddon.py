@@ -243,7 +243,7 @@ def hand_recog_func():
 def mouse_movement_func():
     global previous_gesture
     global current_display_text
-    run_tracking = True
+    run_tracking = False
     current_display_text = "N/A"
     boundary_check = "left"
    
@@ -300,11 +300,33 @@ def mouse_movement_func():
 
                 if gesture == "gesture_scroll.npy" and previous_gesture != "gesture_scroll.npy":
                     pydirectinput.scroll(1)
+                    
+                #if gesture == "gesture_scrollup.npy" and previous_gesture != "gesture_scrollup.npy":
+                #    pydirectinput.scroll(-1)
 
+                trigger_gesture = "gesture_rightclick.npy"
+                trigger_gesture_2 = "gesture_click.npy"
+                trigger_gesture_3 = "gesture_fist.npy"
+
+                game_controller = 1
+                if game_controller == 1: 
+                    if current_gesture == trigger_gesture:
+                        pydirectinput.keyDown("l", _pause=False)
+                        #pydirectinput.mouseDown(_pause=False)
+                    else:
+                        pydirectinput.keyUp("l", _pause=False)
+
+                    if current_gesture == trigger_gesture_2:
+                        pydirectinput.keyDown("k", _pause=False)
+                        #pydirectinput.mouseDown(_pause=False)
+                    else:
+                        pydirectinput.keyUp("k", _pause=False)
+                
             if gesture == "gesture_toggle.npy" and previous_gesture != "gesture_toggle.npy":
 
                 current_display_text = f"Tracking offline."
                 run_tracking = not run_tracking
+
                 
         #if boundary_check == "up":
        # if boundary_check == "down":
