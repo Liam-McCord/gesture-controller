@@ -309,7 +309,7 @@ def mouse_movement_func():
         #if boundary_check == "up":
        # if boundary_check == "down":
         previous_gesture = gesture
-        time.sleep(0.02)  # prevent CPU overuse
+        time.sleep(0.001)  # prevent CPU overuse
 
 # Start threads
 gesture_thread = threading.Thread(target=hand_recog_func, daemon=True)
