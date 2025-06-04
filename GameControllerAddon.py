@@ -240,7 +240,7 @@ def hand_recog_func():
         cap.release()
         cv2.destroyAllWindows()
 
-def mouse_movement_func():
+def mouse_movement_func(): # for left hand behaviour
     global previous_gesture
     global current_display_text
     run_tracking = False
@@ -261,7 +261,6 @@ def mouse_movement_func():
                 left_bound = dot_pos_x[HandLandmark.WRIST]  # could also be a landmark like hand_landmarks[0].x
                 boundary_check = "right"
                 time.sleep(1)
-                
 
         elif boundary_check == "right":
             current_display_text = "Move hand to right side of screen."
